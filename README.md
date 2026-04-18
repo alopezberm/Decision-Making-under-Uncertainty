@@ -1,347 +1,126 @@
 # Decision-Making Under Uncertainty: HVAC System Optimization
 
-A comprehensive project for DTU's Decision Making Under Uncertainty course (Spring 2026), focusing on optimal control of heating, ventilation, and air conditioning (HVAC) systems under uncertain occupancy and electricity prices.
+A comprehensive project for DTU's 02435 Decision Making Under Uncertainty course (Spring 2026), focusing on optimal control of heating, ventilation, and air conditioning (HVAC) systems under uncertain occupancy and electricity prices.
 
 ## Project Overview
 
-This project implements a Mixed Integer Linear Programming (MILP) approach to optimize the operation of a two-room HVAC system. The system must balance competing objectives: minimizing electricity costs while maintaining comfort constraints (temperature and humidity) in the presence of uncertain occupancy levels and time-of-use (TOU) electricity pricing.
+This project evolves from an offline "optimal-in-hindsight" approach (Part A) to developing robust, real-time decision-making policies (Part B). The system balances minimizing electricity costs with maintaining comfort constraints (temperature and humidity) in a two-room restaurant. Furthermore, the project scales up to a distributed multi-agent system coordinating energy consumption across 15 stores in a mall.
 
 ### Key Features
 
-- **MILP-based Optimization**: Uses Pyomo with Gurobi solver for optimal-in-hindsight optimization
-- **Two-Room System**: Models heat exchange, thermal loss, ventilation cooling, and occupancy-based heating
-- **Uncertainty Analysis**: Analyzes 100 different scenarios with varying prices and occupancy patterns
-- **Comfort Control**: Enforces temperature (18-26°C) and humidity (≤70%) comfort constraints
-- **Smart Ventilation**: Implements minimum runtime constraints and humidity-based overrule control
-- **Comprehensive Visualization**: Generates detailed plots showing system performance across scenarios and individual days
+- **MILP-based Optimization**: Uses Pyomo with Gurobi solver for base modeling and deterministic lookaheads.
+- **Advanced Decision Policies**: Implements Stochastic Programming (SP), Approximate Dynamic Programming (ADP) with Linear Value Function Approximation, and Hybrid policies.
+- **Custom Simulation Environment**: Evaluates policies against unknown future data drawn from stochastic processes for prices and occupancies.
+- **Distributed Decision-Making**: Coordinates 15 separate HVAC systems subject to a global peak power constraint using Lagrangian relaxation algorithms.
+- **Smart Control Logic**: Handles non-linear overrule controllers (forced heating/ventilation) and minimum runtime constraints.
+
+---
 
 ## Project Structure
 
-```
+```text
 Decision-Making-under-Uncertainty/
-├── README.md                                    # This file
+├── README.md                                      # This file
 ├── Decission Making, Assignment Part A, 2026/
-│   ├── Assignment_Decision_Making_Part_A.ipynb  # Main Jupyter notebook with all tasks
-│   ├── Assignment_2026 Part A.pdf               # Original assignment specification
-│   ├── SystemCharacteristics.py                 # System parameters 
-│   ├── PlotsRestaurant.py                       # Visualization 
+│   ├── Assignment_Decision_Making_Part_A.ipynb    # Main Jupyter notebook with all tasks
+│   ├── Assignment_2026 Part A.pdf                 # Original assignment specification
+│   ├── SystemCharacteristics.py                   # System parameters 
+│   ├── PlotsRestaurant.py                         # Visualization 
 │   ├── Data_JSON/
-│   │   └── FixedData.json                       # Fixed system data (data visualization)
-│   ├── OccupancyRoom1.csv                       # Room 1 occupancy data
-│   ├── OccupancyRoom2.csv                       # Room 2 occupancy data
-│   ├── PriceData.csv                            # Electricity price
-│   └── __pycache__/                             # Python cache files
-```
+│   │   └── FixedData.json                         # Fixed system data (data visualization)
+│   ├── OccupancyRoom1.csv                         # Room 1 occupancy data
+│   ├── OccupancyRoom2.csv                         # Room 2 occupancy data
+│   ├── PriceData.csv                              # Electricity price
+│   └── __pycache__/                               # Python cache files
+└── Part_B/
+    ├── Assignment_2026_Part_B.pdf                 # Part B specification
+    ├── Solution_to_Assignment_A_2026.py           # Official system model used for Part B
+    ├── SP_policy_[Group].py                       # Task 3: Stochastic Programming Policy
+    ├── ADP_policy_[Group].py                      # Task 4: Approximate Dynamic Programming
+    ├── Hybrid_policy_[Group].py                   # Task 5: Hybrid Policy
+    ├── Evaluation_Environment.py                  # Task 6: Custom simulation and testing engine
+    ├── Distributed_Control.ipynb                  # Task 7: Multi-agent mall coordination
+    ├── PolicyRestaurant.py                        # Template for policy implementation
+    ├── Checks.py                                  # Validation script for policy constraints & time limits
+    ├── PriceProcessRestaurant.py                  # Stochastic model for generating test prices
+    ├── OccupancyProcessRestaurant.py              # Stochastic model for generating test occupancies
+    ├── v2_System_characteristics.py               # Updated fixed parameters and thresholds
+    ├── Task70ccupancies.csv                       # Known occupancies for the 15-store mall
+    └── DataTask7.csv                              # Parameters for the distributed problem
+## System Dynamics & Physics Model
 
-## System Dynamics
+The core environment relies on the linear dynamics validated in Part A:
 
-### Physics Model
+**Temperature Dynamics:**
+`T_r,t = T_r,t-1 + heat_exchange + thermal_loss + heating_effect - ventilation_cooling + occupancy_gain`
 
-The optimization model captures the following dynamics for each room:
+**Humidity Dynamics:**
+`H_t = H_t-1 + occupancy_contribution - ventilation_reduction`
 
-#### Temperature Dynamics
-```
-T_r,t = T_r,t-1 + heat_exchange + thermal_loss + heating_effect - ventilation_cooling + occupancy_gain
-```
+### Initial State for Online Policies (Part B)
+- Temperature (`T_r,0`): 21°C for each room
+- Humidity (`H_0`): 40%
+- Ventilation counter (`c_0`): 0
+- Overrule status (`y_low_r,0`): 0
+- Prices and Occupancy: Drawn from uniform random distributions at start.
 
-**Parameters:**
-- Heat exchange coefficient: `0.6` °C/hour per °C difference between rooms
-- Thermal loss coefficient: `0.1` °C/hour per °C indoor-outdoor difference
-- Heating efficiency: `1.0` °C/hour per kW
-- Ventilation cooling: `0.7` °C per hour when ON
-- Occupancy heating: `0.02` °C/hour per person
+---
 
-#### Humidity Dynamics
-```
-H_t = H_t-1 + occupancy_contribution - ventilation_reduction
-```
+## Implementation Tasks
 
-**Parameters:**
-- Humidity increase from occupancy: `0.18` %/hour per person
-- Humidity reduction from ventilation: `15` %/hour when ventilation ON
+### Part A: Offline Optimization
+- **Task 1 & 2**: Formulation and implementation of the Optimal-in-Hindsight solution (MILP). Calculates the absolute lower bound of costs assuming perfect knowledge of the 10-hour horizon.
 
-### Control Variables
+### Part B: Online Policies under Uncertainty
+All policies are restricted to a **5-8 second execution time** per hour step and must map decisions to valid operational bounds.
 
-1. **Heating Power** (`p_r,t`): Room-specific heater power in kW
-   - Bounds: 0 ≤ p_r,t ≤ 3 kW per room
-   - Can be adjusted continuously
+- **Task 3: Stochastic Programming**: A multi-stage lookahead policy relying on scenario generation (reduced via scenario trees) to anticipate price and occupancy paths.
+- **Task 4: Approximate Dynamic Programming (ADP)**: Solves a single-step "here-and-now" MILP utilizing a Linear Value Function Approximation (VFA) on the post-decision state to estimate the cost-to-go. Weights are trained offline via stochastic gradient descent.
+- **Task 5: Hybrid Policy**: The ultimate control policy combining elements of Lookahead (SP) and Policy/Cost Function Approximations to maximize robustness.
+- **Task 6: Simulation & Evaluation**: A Python testbed evaluating the Dummy, Optimal-in-Hindsight, Expected Value, SP, and ADP policies across 100 independent episodes, generating cost histograms and performance comparisons.
 
-2. **Ventilation Status** (`v_t`): Binary switch for ventilation system
-   - Type: 0 (OFF) or 1 (ON)
-   - Constraint: If turned ON, must stay ON for minimum 3 consecutive hours
+### Part B: Distributed Optimization
+- **Task 7: The Mall Problem**: Expands the scope to $N=15$ stores. Implements a distributed optimization algorithm (ADMM/Subgradient method) to minimize the deviation from a reference temperature `T_ref` across all stores, while strictly respecting a global power limit `P_mall`. Evaluates convergence via Lagrangian multiplier evolution and adaptive step sizes.
 
-3. **Overrule Controls**: Binary indicators for comfort violations
-   - Temperature overrule (activate heater if T < 18°C)
-   - Humidity overrule (force ventilation if H > 70%)
-
-### State Variables
-
-- **Room Temperatures** (`T_r,t`): Modeled for rooms 1 and 2, in °C
-- **Humidity** (`H_t`): Single humidity variable for the building, in %
-- **Ventilation Startup** (`y_t`): Binary indicator for ventilation transitions
-
-## Optimization Objective
-
-Minimize total electricity cost over 10-hour horizon:
-
-```
-Cost = Σ_t [price_t × (p_1,t + p_2,t + 2.0 × v_t)]
-```
-
-Where:
-- `price_t`: Time-of-use electricity price at hour t (€/kWh)
-- `p_r,t`: Heating power for room r at hour t (kW)
-- `2.0`: Ventilation power consumption when ON (kW)
-
-## Comfort Constraints
-
-1. **Temperature Comfort Zones**:
-   - Green: 18-22°C (primary comfort zone)
-   - Yellow: 22-26°C (reduced comfort)
-   - Red: Above 26°C or below 18°C (violations requiring overrule)
-
-2. **Humidity Threshold**:
-   - Maximum 70% relative humidity
-   - Ventilation automatically activates if exceeded
-
-3. **Overrule Logic**:
-   - Cannot activate both heater and ventilation simultaneously for same room
-   - Low-temperature overrule takes priority when T < 18°C
-   - High-temperature overrule prevents heating when T > 26°C
-
-## Data Files
-
-### Fixed Parameters (`Data_JSON/FixedData.json`)
-Contains all system characteristics:
-- Initial conditions (temperature: 21°C, humidity: 40%)
-- System coefficients (heat exchange, thermal loss, ventilation)
-- Control thresholds (temperature: 18-26°C, humidity: 70%)
-- Outdoor temperature profile (sinusoidal, base 10°C)
-
-### Time-Series Data
-- **Electricity Prices** (`PriceData.csv`): TOU pricing for 100 days × 10 hours
-- **Occupancy Room 1** (`OccupancyRoom1.csv`): Daily occupancy patterns (0-5 people)
-- **Occupancy Room 2** (`OccupancyRoom2.csv`): Daily occupancy patterns (0-5 people)
-
-### Data Structure
-All uncertain data (prices, occupancy) are organized as:
-```json
-{
-  "nested": {
-    "0": {0: value_t0, 1: value_t1, ..., 9: value_t9},  // Day 0, 10 hours
-    "1": {...},  // Day 1
-    ...
-    "99": {...}  // Day 99
-  }
-}
-```
+---
 
 ## Getting Started
 
 ### Prerequisites
-
 - Python 3.8+
-- Jupyter Notebook or JupyterLab
-- **Gurobi Optimizer** (commercial solver - required)
-- Key Python packages:
-  - `pyomo`: MILP modeling framework
-  - `numpy`: Numerical computing
-  - `pandas`: Data manipulation
-  - `matplotlib`: Visualization
+- **Gurobi Optimizer** (commercial solver - required for Pyomo MILP)
+- Key Python packages: `pyomo`, `numpy`, `pandas`, `matplotlib`
 
 ### Installation
 
-1. **Install Gurobi**: 
-   - Download from https://www.gurobi.com/downloads/
-   - Install license (including free academic license)
-   - Verify installation: `gurobi.sh` or `gurobi_cl --version`
-
-2. **Install Python dependencies**:
+1. **Install Gurobi & Dependencies**:
 ```bash
-pip install pyomo numpy pandas matplotlib
-```
-
-3. **Install Gurobi Python interface**:
-```bash
-pip install gurobipy
-```
-
-4. **Verify Pyomo can find Gurobi**:
-```bash
-python -c "import pyomo.environ as pyo; solver = pyo.SolverFactory('gurobi'); print('Gurobi available!' if solver.available() else 'Gurobi NOT available')"
-```
-
-5. **Open the notebook**:
-```bash
-jupyter notebook "Decission Making, Assignment Part A, 2026/Assignment_Decision_Making_Part_A.ipynb"
-```
-
-## Notebook Structure
-
-The main notebook (`Assignment_Decision_Making_Part_A.ipynb`) is organized into three main sections:
-
-### Task 1: Optimal-in-Hindsight Formulation
-- **Description**: Implements the MILP model using Pyomo
-- **Function**: `solve_day_optimal_in_hindsight()`
-- **Process**:
-  1. For each of 100 days with known prices and occupancy
-  2. Solves the 10-hour optimization problem
-  3. Returns optimal heating schedule, ventilation pattern, and resulting costs
-- **Key Metrics**: Daily costs, power usage, temperature/humidity profiles
-
-### Task 2: Aggregate Analysis & Visualization
-- **Description**: Analyzes results across all 100 scenarios
-- **Outputs**:
-  - Average system performance metrics
-  - Total energy consumption and costs
-  - Statistical summaries (mean, min, max, std dev)
-- **Visualization**: 4-subplot comprehensive plot showing:
-  - Room temperatures vs. comfort thresholds
-  - Heater consumption (stacked bars + total line)
-  - Ventilation status and humidity level
-  - Electricity price and occupancy patterns
-
-### Task 3: Percentile Analysis & Random Day Plotting
-- **Description**: Explores uncertainty across scenarios
-- **Percentile Plots** (Task 3a):
-  - Shows 10th, 20th, ..., 90th percentiles for all variables
-  - Highlights scenario-mean performance over percentile bands
-  - Reveals potential worst/best-case scenarios
-  
-- **Random Day Analysis** (Task 3b):
-  - Plots detailed results for 2 randomly selected days
-  - Shows individual optimization decisions (heating, ventilation)
-  - Displays room-specific comfort violations if any
-
-## Key Results & Insights
-
-### Performance Metrics
-- **Average Daily Cost**: Computed across 100 scenarios
-- **Heating Utilization**: Average power consumption per room
-- **Ventilation Patterns**: Hours of operation per day
-- **Comfort Satisfaction**: Percentage of time within temperature/humidity targets
-
-### System Behavior
-1. **Temperature Control**: Rooms maintain 18-22°C comfort zone 80%+ of the time
-2. **Cost Optimization**: Algorithm shifts heating to low-price periods
-3. **Ventilation**: Activates primarily during high-occupancy periods or humidity spikes
-4. **Uncertainty Impact**: Results show 10th-90th percentile spread revealing robustness
-
-## Configuration & Customization
-
-### Adjusting System Parameters
-
-Edit `SystemCharacteristics.py` to modify:
-- `heating_max_power`: Maximum heater capacity (kW)
-- `heat_exchange_coeff`: Inter-room heat transfer rate
-- `temp_min_comfort_threshold`: Comfortable lower temperature (°C)
-- `humidity_threshold`: Maximum acceptable humidity (%)
-
-### Running Specific Days
-
-To optimize for subset of scenarios:
-```python
-for day in range(10):  # Run first 10 days only
-    # ... optimization code
-```
-
-### Solver Configuration
-
-Gurobi is the required solver for this project. The solver is automatically selected in the optimization function:
-```python
-sol = solve_day_optimal_in_hindsight(
-    fixed, price, occ1, occ2, 
-    solver_preference=("gurobi",)
-)
-```
-
-If you need to use a different solver, modify the `solver_preference` parameter in the function call.
-
-## Visualization Functions
-
-### Main Plot Function: `plot_HVAC_results_fixed()`
-Located in `PlotsRestaurant.py`
-
-**Parameters**:
-- `T`: Time array
-- `Temp_r1`, `Temp_r2`: Room temperatures (11 values for 10-hour period)
-- `h_r1`, `h_r2`: Heater power schedules (10 values)
-- `v`: Ventilation schedule (10 binary values)
-- `Hum`: Humidity trajectory (11 values)
-- `price`: Electricity prices (10 values)
-- `Occ_r1`, `Occ_r2`: Occupancy patterns (10 values)
-
-**Output**: 4-subplot figure showing all system variables and constraints
-
-## Troubleshooting
-
-### Gurobi Not Found
-```
-RuntimeError: No MILP solver succeeded. Tried ('gurobi',). Last error: ...
-```
-**Solution**: 
-1. Ensure Gurobi is installed and licensed:
-```bash
-gurobi.sh
-```
-
-2. Verify Python can access Gurobi:
-```bash
-python -c "import gurobipy; print('Gurobi installed successfully')"
-```
-
-3. Install/update Gurobi Python bindings:
-```bash
-pip install --upgrade gurobipy
-```
-
-4. Restart Jupyter kernel after installing Gurobi
-
-### Missing Data Files
-Ensure all CSV files and JSON data are in the correct directory. The notebook automatically loads data via:
-```python
-from SystemCharacteristics import get_fixed_data
-```
-
-### Gurobi License Issues
-If you get a license error:
-```
-Gurobi license check failed
-```
-**Solution**:
-- Activate your Gurobi license (includes free academic licenses)
-- Visit https://www.gurobi.com for license information
-- Set `GRB_LICENSE_FILE` environment variable if using non-standard license location
-
-### Memory Issues with 100 Days
-If running out of memory, process in chunks:
-```python
-for batch in range(0, num_days, 25):  # Process 25 days at a time
-    # ... optimization code
-```
-
-## References
-
-- **Pyomo Documentation**: https://pyomo.readthedocs.io/
-- **MILP Optimization**: Linear Programming and Mixed-Integer Programming fundamentals
-- **HVAC Control**: Building energy management and comfort optimization
-- **DTU Course**: Decision Making Under Uncertainty, Spring 2026
-
-## Author & Contributors
-
-Created for DTU Decision-Making Under Uncertainty course.
-
-## License & Usage
-
-This is an academic assignment for educational purposes. Use and modification are permitted for educational contexts.
-
-## Related Files
-
-- **Original Assignment**: See `Assignment_2026 Part A.pdf` for full task specifications
-- **System Parameters**: Refer to `SystemCharacteristics.py` for all numerical values
-- **Results Storage**: Solution data stored as dictionaries with keys: `['objective_cost', 'v', 'p1', 'p2', 'T1', 'T2', 'H']`
+pip install pyomo numpy pandas matplotlib gurobipy
+### Verify Gurobi License
+Ensure you have an active academic license from [Gurobi's website](https://www.gurobi.com/).
 
 ---
 
-**Last Updated**: March 2026  
-**Status**: Active Development
+## Running Part B Policies
+
+To test a policy before submission, ensure it passes the rigorous checks defined in the assignment:
+
+```bash
+python Checks.py --policy ADP_policy_groupX.py
+
+*Note: Any policy exceeding 15 seconds per step or returning NaN values will automatically default to the Dummy (OFF) policy for that hour.*
+
+---
+
+## Key Results & Evaluation Metrics
+
+* **Average Daily Cost**: The primary metric for Tasks 3-5, evaluated over unseen stochastic paths.
+* **Constraint Satisfaction**: Adherence to the minimum ventilation runtime (3 hours) and overrule controller boundaries.
+* **Algorithm Convergence**: For Task 7, analyzed via objective value plots against iterations for different step sizes (alpha = 0.001 to 10, plus adaptive steps).
+
+---
+
+## Author & Contributors
+
+Developed for DTU Decision-Making Under Uncertainty course (02435).  
+**Last Updated**: Spring 2026
