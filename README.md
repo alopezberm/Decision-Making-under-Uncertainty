@@ -47,6 +47,7 @@ Decision-Making-under-Uncertainty/
     ├── v2_System_characteristics.py               # Updated fixed parameters and thresholds
     ├── Task70ccupancies.csv                       # Known occupancies for the 15-store mall
     └── DataTask7.csv                              # Parameters for the distributed problem
+```
 ## System Dynamics & Physics Model
 
 The core environment relies on the linear dynamics validated in Part A:
@@ -96,9 +97,9 @@ All policies are restricted to a **5-8 second execution time** per hour step and
 1. **Install Gurobi & Dependencies**:
 ```bash
 pip install pyomo numpy pandas matplotlib gurobipy
+```
 ### Verify Gurobi License
 Ensure you have an active academic license from [Gurobi's website](https://www.gurobi.com/).
-
 ---
 
 ## Running Part B Policies
@@ -107,7 +108,7 @@ To test a policy before submission, ensure it passes the rigorous checks defined
 
 ```bash
 python Checks.py --policy ADP_policy_groupX.py
-
+```
 *Note: Any policy exceeding 15 seconds per step or returning NaN values will automatically default to the Dummy (OFF) policy for that hour.*
 
 ---
