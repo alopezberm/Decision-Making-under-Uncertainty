@@ -21,7 +21,7 @@ This project evolves from an offline "optimal-in-hindsight" approach (Part A) to
 ```text
 Decision-Making-under-Uncertainty/
 ├── README.md                                      # This file
-├── Decission Making, Assignment Part A, 2026/
+├── Part_A/
 │   ├── Assignment_Decision_Making_Part_A.ipynb    # Main Jupyter notebook with all tasks
 │   ├── Assignment_2026 Part A.pdf                 # Original assignment specification
 │   ├── SystemCharacteristics.py                   # System parameters 
