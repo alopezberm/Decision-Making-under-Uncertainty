@@ -23,24 +23,28 @@ Usage:
 import numpy as np
 from scipy.cluster.vq import kmeans2
 import pyomo.environ as pyo
+from v2_SystemCharacteristics import get_fixed_data
+from PriceProcessRestaurant import price_model
+from OccupancyProcessRestaurant import next_occupancy_levels
 
 # ============================================================
 # System parameters  (v2_SystemCharacteristics.py)
 # ============================================================
+SYS_AUX = get_fixed_data()
 _P = {
-    'P_max'    : 3.0,
-    'P_vent'   : 2.0,
-    'T_low'    : 18.0,
-    'T_OK'     : 22.0,
-    'T_high'   : 26.0,
-    'H_high'   : 70.0,
-    'zeta_exch': 0.6,
-    'zeta_loss': 0.1,
-    'zeta_conv': 1.0,
-    'zeta_cool': 0.7,
-    'zeta_occ' : 0.02,
-    'eta_occ'  : 0.18,
-    'eta_vent' : 15.0,
+    'P_max'    : SYS_AUX['heating_max_power'],
+    'P_vent'   : SYS_AUX['ventilation_power'],
+    'T_low'    : SYS_AUX['temp_min_comfort_threshold'],
+    'T_OK'     : SYS_AUX['temp_OK_threshold'],
+    'T_high'   : SYS_AUX['temp_max_comfort_threshold'],
+    'H_high'   : SYS_AUX['humidity_threshold'],
+    'zeta_exch': SYS_AUX['heat_exchange_coeff'],
+    'zeta_loss': SYS_AUX['thermal_loss_coeff'],
+    'zeta_conv': SYS_AUX['heating_efficiency_coeff'],
+    'zeta_cool': SYS_AUX['heat_vent_coeff'],
+    'zeta_occ' : SYS_AUX['heat_occupancy_coeff'],
+    'eta_occ'  : SYS_AUX['humidity_occupancy_coeff'],
+    'eta_vent' : SYS_AUX['humidity_vent_coeff'],
     'PENALTY'  : 1000.0,
 }
 
@@ -53,31 +57,30 @@ VENT_UPTIME = 3  # minimum ventilation on-time (hours) — fixed by system spec
 
 
 # ============================================================
-# Deterministic outdoor temperature (known sinusoidal profile)
+# Deterministic outdoor temperature (from v2_SystemCharacteristics)
 # ============================================================
 def _T_out(t: int) -> float:
-    t_capped = max(0, min(t, 9))
-    return 3.0 * np.sin(2.0 * np.pi * t_capped / 10.0 - np.pi / 2.0)
+    """Get outdoor temperature at time t from system characteristics."""
+    t_capped = max(0, min(t, len(SYS_AUX['outdoor_temperature']) - 1))
+    return float(SYS_AUX['outdoor_temperature'][t_capped])
 
 
 # ============================================================
-# Stochastic process samplers
+# Stochastic process samplers (using system process functions)
 # ============================================================
 def _sample_price(current: float, previous: float, n: int) -> np.ndarray:
-    mean_p, rev = 4.0, 0.12
-    base = current + 0.6 * (current - previous) + rev * (mean_p - current)
-    samples = base + np.random.normal(0.0, 0.5, n)
-    neg = samples < 0
-    if neg.any():
-        samples[neg] = np.random.uniform(0.0, mean_p * 0.3, int(neg.sum()))
-    return np.clip(samples, 0.0, 12.0)
+    """Generate n price samples using price_model from PriceProcessRestaurant."""
+    samples = np.array([price_model(current, previous) for _ in range(n)])
+    return samples
 
 
 def _sample_occ(r1: float, r2: float, n: int):
-    rev, coup = 0.25, 0.1
-    r1n = r1 + rev * (35.0 - r1) + coup * (r2 - r1) + np.random.normal(0, 3.0, n)
-    r2n = r2 + rev * (25.0 - r2) + coup * (r1 - r2) + np.random.normal(0, 2.5, n)
-    return np.clip(r1n, 20.0, 50.0), np.clip(r2n, 10.0, 30.0)
+    """Generate n occupancy samples using next_occupancy_levels from OccupancyProcessRestaurant."""
+    r1_samples = np.zeros(n)
+    r2_samples = np.zeros(n)
+    for i in range(n):
+        r1_samples[i], r2_samples[i] = next_occupancy_levels(r1, r2)
+    return r1_samples, r2_samples
 
 
 # ============================================================

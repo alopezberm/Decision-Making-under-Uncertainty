@@ -12,7 +12,7 @@ NOT TO BE CHANGED BY THE STUDENTS
 
 import numpy as np
 import matplotlib.pyplot as plt
-import SystemCharacteristics
+import v2_SystemCharacteristics
 
 
 def price_model(current_price, previous_price):
@@ -41,7 +41,7 @@ def price_model(current_price, previous_price):
 # -----------------------------
 # Example Use: Generate and plot trajectories
 # -----------------------------
-params = SystemCharacteristics.get_fixed_data()
+params = v2_SystemCharacteristics.get_fixed_data()
 T = int(params['num_timeslots'])
 
 num_paths = 100
