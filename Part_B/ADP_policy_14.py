@@ -34,7 +34,7 @@ params = {
 #
 # NOTE TO EVALUATOR: These weights have been trained using the precise dynamics 
 # from the v2_SystemCharacteristics.py file to accurately reflect the MIQP model.
-TRAINED_THETA = [2.0039, 1.8671, -0.3594, 0.0, 0.0] # UPDATE THESE AFTER RETRAINING!
+TRAINED_THETA = [2.3031, 2.3009, 5.1397, 0.0312, 0.0268]
 
 # ==============================================================================
 # 3. SINGLE-STEP ADP OPTIMIZER
