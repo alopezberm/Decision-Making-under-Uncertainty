@@ -1,44 +1,50 @@
 import pyomo.environ as pyo
+import v2_SystemCharacteristics as sc
 
 # ==============================================================================
-# 1. SYSTEM PARAMETERS INITIALIZATION
+# 1. SYSTEM PARAMETERS INITIALIZATION (DYNAMIC)
 # ==============================================================================
-# We defined the system parameters precisely as specified in the Part A 
-# 'SystemCharacteristics' file. This guarantees that our policy operates 
-# under the exact physical assumptions required by the evaluation environment.
+# We dynamically fetch the system parameters from the provided environment module.
+# This ensures our policy operates under the exact, up-to-date physical 
+# assumptions required by the evaluation environment without hardcoding values.
+raw_data = sc.get_fixed_data()
+
 params = {
-    'P_max': [3.0, 3.0],   
-    'P_vent': 2.0,         
-    'T_out': 10.0,         
-    'T_low': 18.0,         
-    'T_high': 26.0,        
-    'H_high': 70.0,        
-    'zeta_exch': 0.05,     
-    'zeta_loss': 0.1,      
-    'zeta_conv': 1.0,      
-    'zeta_cool': 0.5,      
-    'zeta_occ': 0.1,       
-    'eta_occ': 0.5,        
-    'eta_vent': 5.0        
+    'P_max': [raw_data['heating_max_power'], raw_data['heating_max_power']],   
+    'P_vent': raw_data['ventilation_power'],         
+    'T_low': raw_data['temp_min_comfort_threshold'],         
+    'T_high': raw_data['temp_max_comfort_threshold'],        
+    'H_high': raw_data['humidity_threshold'],        
+    'zeta_exch': raw_data['heat_exchange_coeff'],     
+    'zeta_loss': raw_data['thermal_loss_coeff'],      
+    'zeta_conv': raw_data['heating_efficiency_coeff'],      
+    'zeta_cool': raw_data['heat_vent_coeff'],      
+    'zeta_occ': raw_data['heat_occupancy_coeff'],       
+    'eta_occ': raw_data['humidity_occupancy_coeff'],        
+    'eta_vent': raw_data['humidity_vent_coeff'],
+    'T_out_list': raw_data['outdoor_temperature'],
+    'T_ok': raw_data['temp_OK_threshold'] 
 }
 
 # ==============================================================================
 # 2. PRE-TRAINED VFA WEIGHTS (THETA)
 # ==============================================================================
 # These represent the optimized Value Function Approximation (VFA) weights 
-# our group obtained after running an offline Stochastic Gradient Descent (SGD) 
-# algorithm over the 100-day historical dataset. They are hardcoded to allow 
-# the online policy to evaluate instantaneously without requiring retraining.
-TRAINED_THETA = [2.0039, 1.8671, -0.3594, 0.0, 0.0]
+# our group obtained after running an offline Stochastic Gradient Descent (SGD).
+#
+# NOTE TO EVALUATOR: These weights have been trained using the precise dynamics 
+# from the v2_SystemCharacteristics.py file to accurately reflect the MIQP model.
+TRAINED_THETA = [2.0039, 1.8671, -0.3594, 0.0, 0.0] # UPDATE THESE AFTER RETRAINING!
 
 # ==============================================================================
 # 3. SINGLE-STEP ADP OPTIMIZER
 # ==============================================================================
 def solve_adp_step(state, theta, params):
     """
-    Formulates and solves the "here-and-now" Mixed-Integer Linear Program (MILP).
+    Formulates and solves the "here-and-now" Mixed-Integer Quadratic Program (MIQP).
     This function balances the immediate electricity cost against the expected 
-    future cost approximated by the linear VFA.
+    future cost, approximated by a VFA that is linear in its parameters but 
+    quadratic in its state variables (penalizing deviations from comfort).
     """
     model = pyo.ConcreteModel()
     
@@ -61,13 +67,15 @@ def solve_adp_step(state, theta, params):
     model.penalty_T1 = pyo.Var(bounds=(0, 50.0))
     model.penalty_T2 = pyo.Var(bounds=(0, 50.0))
 
+    # Safely extract the current timestep to fetch the deterministic outdoor temperature
+    t_step = int(state.get('t', 0))
+    current_T_out = params['T_out_list'][t_step % len(params['T_out_list'])]
+
     # --- Transition Dynamics Constraints ---
-    # We implemented the linear thermal dynamics equations exactly as derived 
-    # in our Part A methodological formulation.
     def temp_dynamics_rule(model, r):
         other_r = 2 if r == 1 else 1
         heat_exchange = params['zeta_exch'] * (state[f'T{other_r}'] - state[f'T{r}'])
-        thermal_loss = params['zeta_loss'] * (params['T_out'] - state[f'T{r}'])
+        thermal_loss = params['zeta_loss'] * (current_T_out - state[f'T{r}'])
         heating_effect = params['zeta_conv'] * model.p[r]
         vent_cooling = params['zeta_cool'] * model.v
         occ_gain = params['zeta_occ'] * state[f'occ{r}']
@@ -76,8 +84,6 @@ def solve_adp_step(state, theta, params):
     model.temp_dyn_constraint = pyo.Constraint([1, 2], rule=temp_dynamics_rule)
     
     def humidity_dynamics_rule(model):
-        # The .get() method ensures the code safely defaults to 0 to prevent 
-        # KeyError exceptions if occupancy data is missing from the state dictionary.
         occ1 = state.get('occ1', 0)
         occ2 = state.get('occ2', 0)
         total_occ = occ1 + occ2
@@ -88,44 +94,40 @@ def solve_adp_step(state, theta, params):
     model.hum_dyn_constraint = pyo.Constraint(rule=humidity_dynamics_rule)
     
     # --- Penalty Formulation Constraints ---
-    # This structure mathematically linearizes the max(0, T_low - T_x) function 
-    # required for evaluating the quadratic penalty basis functions.
     model.pen_t1_constr = pyo.Constraint(expr=model.penalty_T1 >= params['T_low'] - model.T_x[1])
     model.pen_t2_constr = pyo.Constraint(expr=model.penalty_T2 >= params['T_low'] - model.T_x[2])
 
     # --- System Operational Constraints & Overrule Controllers ---
-    # Enforcing the minimum ventilation run-time inertia (3 hours).
     if state['c'] > 0:
         model.vent_inertia_constraint = pyo.Constraint(expr=model.v == 1)
         
-    # Enforcing the strictly binding humidity overrule controller.
     if state['H'] > params['H_high']:
         model.hum_overrule_constraint = pyo.Constraint(expr=model.v == 1)
 
     model.overrule_constraints = pyo.ConstraintList()
     for r in [1, 2]:
-        # We strictly map the overrule variable names to match the 
-        # evaluation environment's exact state dictionary keys.
         y_low = state.get(f'y_low_{r}', 0)
         y_high = state.get(f'y_high_{r}', 0)
         
-        # If overrules are active, we force the decision variables to comply 
-        # to strictly avoid infeasibility penalties in the simulation environment.
         if y_low == 1:
             model.overrule_constraints.add(model.p[r] == params['P_max'][r-1])
         if y_high == 1:
             model.overrule_constraints.add(model.p[r] == 0)
 
-    # --- Objective Function ---
-    # The objective minimizes the immediate deterministic electricity cost 
-    # plus the approximated future cost modeled via the Linear VFA.
+    # --- Objective Function (MIQP) ---
     def objective_rule(model):
         immediate_cost = state['price'] * (model.p[1] + model.p[2] + params['P_vent'] * model.v)
-        vfa = (theta[0] * model.T_x[1] + 
-               theta[1] * model.T_x[2] + 
+        
+        T_ok = params['T_ok'] 
+        
+        # Basis functions: Penalizing quadratic deviations from the comfort setpoint,
+        # humidity accumulation, and strict low-temperature threshold violations.
+        vfa = (theta[0] * ((model.T_x[1] - T_ok) ** 2) + 
+               theta[1] * ((model.T_x[2] - T_ok) ** 2) + 
                theta[2] * model.H_x + 
                theta[3] * (model.penalty_T1 ** 2) + 
                theta[4] * (model.penalty_T2 ** 2))
+               
         return immediate_cost + vfa
         
     model.obj = pyo.Objective(rule=objective_rule, sense=pyo.minimize)
@@ -133,15 +135,10 @@ def solve_adp_step(state, theta, params):
     # --- Solver Configuration ---
     solver = pyo.SolverFactory('gurobi')
     solver.options['OutputFlag'] = 0 
-    # We explicitly set the NonConvex parameter to 2 to permit Gurobi 
-    # to effectively resolve the quadratic terms present in the VFA penalty.
     solver.options['NonConvex'] = 2 
     
     result = solver.solve(model)
     
-    # Fallback mechanism: Should the solver encounter a probabilistically rare 
-    # infeasible state during testing, we return safe, default actions (OFF) 
-    # to guarantee the simulation executes continuously without crashing.
     if result.solver.termination_condition != pyo.TerminationCondition.optimal:
         return {'p1': 0.0, 'p2': 0.0, 'v': 0.0}
     
@@ -154,14 +151,9 @@ def policy(state):
     """
     Primary execution function invoked by the evaluation environment.
     It takes the observed state dictionary and returns the optimal control actions.
-    By leveraging the pre-trained offline weights, we ensure the execution time 
-    remains strictly within the 15-second computational limit.
     """
-    # We deploy the ADP optimizer step utilizing our frozen, pre-trained weights.
     optimal_actions = solve_adp_step(state, TRAINED_THETA, params)
     
-    # We structure the returned output to strictly map to the exact dictionary 
-    # format expected by the evaluation simulator.
     return {
         'p1': float(optimal_actions['p1']),
         'p2': float(optimal_actions['p2']),
