@@ -68,7 +68,7 @@ def solve_adp_step(state, theta, params):
     model.penalty_T2 = pyo.Var(bounds=(0, 50.0))
 
     # Safely extract the current timestep to fetch the deterministic outdoor temperature
-    t_step = int(state.get('t', 0))
+    t_step = int(state.get('current_time', 0))
     current_T_out = params['T_out_list'][t_step % len(params['T_out_list'])]
 
     # --- Transition Dynamics Constraints ---
@@ -78,19 +78,19 @@ def solve_adp_step(state, theta, params):
         thermal_loss = params['zeta_loss'] * (current_T_out - state[f'T{r}'])
         heating_effect = params['zeta_conv'] * model.p[r]
         vent_cooling = params['zeta_cool'] * model.v
-        occ_gain = params['zeta_occ'] * state[f'occ{r}']
+        occ_gain = params['zeta_occ'] * state[f'Occ{r}']
         return model.T_x[r] == state[f'T{r}'] + heat_exchange + thermal_loss + heating_effect - vent_cooling + occ_gain
-    
+
     model.temp_dyn_constraint = pyo.Constraint([1, 2], rule=temp_dynamics_rule)
-    
+
     def humidity_dynamics_rule(model):
-        occ1 = state.get('occ1', 0)
-        occ2 = state.get('occ2', 0)
+        occ1 = state.get('Occ1', 0)
+        occ2 = state.get('Occ2', 0)
         total_occ = occ1 + occ2
         occ_contribution = params['eta_occ'] * total_occ
         vent_reduction = params['eta_vent'] * model.v
         return model.H_x == state['H'] + occ_contribution - vent_reduction
-        
+
     model.hum_dyn_constraint = pyo.Constraint(rule=humidity_dynamics_rule)
     
     # --- Penalty Formulation Constraints ---
@@ -98,25 +98,22 @@ def solve_adp_step(state, theta, params):
     model.pen_t2_constr = pyo.Constraint(expr=model.penalty_T2 >= params['T_low'] - model.T_x[2])
 
     # --- System Operational Constraints & Overrule Controllers ---
-    if state['c'] > 0:
+    if state.get('vent_counter', 0) > 0:
         model.vent_inertia_constraint = pyo.Constraint(expr=model.v == 1)
-        
+
     if state['H'] > params['H_high']:
         model.hum_overrule_constraint = pyo.Constraint(expr=model.v == 1)
 
     model.overrule_constraints = pyo.ConstraintList()
+    low_override_keys = {1: 'low_override_r1', 2: 'low_override_r2'}
     for r in [1, 2]:
-        y_low = state.get(f'y_low_{r}', 0)
-        y_high = state.get(f'y_high_{r}', 0)
-        
+        y_low = state.get(low_override_keys[r], 0)
         if y_low == 1:
             model.overrule_constraints.add(model.p[r] == params['P_max'][r-1])
-        if y_high == 1:
-            model.overrule_constraints.add(model.p[r] == 0)
 
     # --- Objective Function (MIQP) ---
     def objective_rule(model):
-        immediate_cost = state['price'] * (model.p[1] + model.p[2] + params['P_vent'] * model.v)
+        immediate_cost = state['price_t'] * (model.p[1] + model.p[2] + params['P_vent'] * model.v)
         
         T_ok = params['T_ok'] 
         
@@ -140,22 +137,22 @@ def solve_adp_step(state, theta, params):
     result = solver.solve(model)
     
     if result.solver.termination_condition != pyo.TerminationCondition.optimal:
-        return {'p1': 0.0, 'p2': 0.0, 'v': 0.0}
-    
-    return {'p1': pyo.value(model.p[1]), 'p2': pyo.value(model.p[2]), 'v': pyo.value(model.v)}
+        return {'HeatPowerRoom1': 0.0, 'HeatPowerRoom2': 0.0, 'VentilationON': 0}
+
+    return {'HeatPowerRoom1': pyo.value(model.p[1]), 'HeatPowerRoom2': pyo.value(model.p[2]), 'VentilationON': pyo.value(model.v)}
 
 # ==============================================================================
 # 4. POLICY EXECUTION FUNCTION
 # ==============================================================================
-def policy(state):
+def select_action(state):
     """
     Primary execution function invoked by the evaluation environment.
     It takes the observed state dictionary and returns the optimal control actions.
     """
     optimal_actions = solve_adp_step(state, TRAINED_THETA, params)
-    
+
     return {
-        'p1': float(optimal_actions['p1']),
-        'p2': float(optimal_actions['p2']),
-        'v': int(optimal_actions['v'])
+        'HeatPowerRoom1': float(optimal_actions['HeatPowerRoom1']),
+        'HeatPowerRoom2': float(optimal_actions['HeatPowerRoom2']),
+        'VentilationON': int(optimal_actions['VentilationON'])
     }
