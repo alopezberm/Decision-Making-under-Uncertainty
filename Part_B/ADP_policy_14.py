@@ -1,158 +1,154 @@
+import os
+import json
 import pyomo.environ as pyo
 import v2_SystemCharacteristics as sc
 
 # ==============================================================================
-# 1. SYSTEM PARAMETERS INITIALIZATION (DYNAMIC)
+# 1. SYSTEM PARAMETERS
 # ==============================================================================
-# We dynamically fetch the system parameters from the provided environment module.
-# This ensures our policy operates under the exact, up-to-date physical 
-# assumptions required by the evaluation environment without hardcoding values.
-raw_data = sc.get_fixed_data()
-
+_raw = sc.get_fixed_data()
 params = {
-    'P_max': [raw_data['heating_max_power'], raw_data['heating_max_power']],   
-    'P_vent': raw_data['ventilation_power'],         
-    'T_low': raw_data['temp_min_comfort_threshold'],         
-    'T_high': raw_data['temp_max_comfort_threshold'],        
-    'H_high': raw_data['humidity_threshold'],        
-    'zeta_exch': raw_data['heat_exchange_coeff'],     
-    'zeta_loss': raw_data['thermal_loss_coeff'],      
-    'zeta_conv': raw_data['heating_efficiency_coeff'],      
-    'zeta_cool': raw_data['heat_vent_coeff'],      
-    'zeta_occ': raw_data['heat_occupancy_coeff'],       
-    'eta_occ': raw_data['humidity_occupancy_coeff'],        
-    'eta_vent': raw_data['humidity_vent_coeff'],
-    'T_out_list': raw_data['outdoor_temperature'],
-    'T_ok': raw_data['temp_OK_threshold'] 
+    'P_max'    : _raw['heating_max_power'],
+    'P_vent'   : _raw['ventilation_power'],
+    'T_low'    : _raw['temp_min_comfort_threshold'],
+    'T_ok'     : _raw['temp_OK_threshold'],
+    'T_high'   : _raw['temp_max_comfort_threshold'],
+    'H_high'   : _raw['humidity_threshold'],
+    'zeta_exch': _raw['heat_exchange_coeff'],
+    'zeta_loss': _raw['thermal_loss_coeff'],
+    'zeta_conv': _raw['heating_efficiency_coeff'],
+    'zeta_cool': _raw['heat_vent_coeff'],
+    'zeta_occ' : _raw['heat_occupancy_coeff'],
+    'eta_occ'  : _raw['humidity_occupancy_coeff'],
+    'eta_vent' : _raw['humidity_vent_coeff'],
+    'T_out'    : _raw['outdoor_temperature'],
 }
 
 # ==============================================================================
-# 2. PRE-TRAINED VFA WEIGHTS (THETA)
-# ==============================================================================
-# These represent the optimized Value Function Approximation (VFA) weights 
-# our group obtained after running an offline Stochastic Gradient Descent (SGD).
+# 2. TIME-DEPENDENT VFA WEIGHTS  (produced by ADP_policy_14.ipynb)
 #
-# NOTE TO EVALUATOR: These weights have been trained using the precise dynamics 
-# from the v2_SystemCharacteristics.py file to accurately reflect the MIQP model.
-TRAINED_THETA = [2.3031, 2.3009, 5.1397, 0.0312, 0.0268]
+# ETA[t] is a 7-element list corresponding to features:
+#   [(T1-T_ok)^2, (T2-T_ok)^2, H, c, max(0,T_low-T1), max(0,T_low-T2), 1]
+# ==============================================================================
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_WEIGHTS_PATH = os.path.join(_HERE, 'output', 'adp_weights.json')
+
+try:
+    with open(_WEIGHTS_PATH) as _f:
+        _w = json.load(_f)
+    ETA = {int(t): _w['eta'][t] for t in _w['eta']}
+except FileNotFoundError:
+    # Fallback weights (SGD-trained, kept for safety before first notebook run)
+    _fallback = [2.2667, 2.2761, 5.1160, 0.0270, 0.0368, 0.0, 0.0]
+    ETA = {t: _fallback for t in range(10)}
+
 
 # ==============================================================================
-# 3. SINGLE-STEP ADP OPTIMIZER
+# 3. ONLINE 1-STEP ADP OPTIMIZER
 # ==============================================================================
-def solve_adp_step(state, theta, params):
+def solve_adp_step(state: dict, eta: list, params: dict) -> dict:
     """
-    Formulates and solves the "here-and-now" Mixed-Integer Quadratic Program (MIQP).
-    This function balances the immediate electricity cost against the expected 
-    future cost, approximated by a VFA that is linear in its parameters but 
-    quadratic in its state variables (penalizing deviations from comfort).
+    Solve the here-and-now MIQP for one timestep:
+
+        min_{p1,p2,v}  price*(p1 + p2 + P_vent*v) + eta @ phi(x_next(p1,p2,v))
+
+    phi(x_next) = [(T1x-T_ok)^2, (T2x-T_ok)^2, Hx, c_next, pen1, pen2, 1]
+    expressed as Pyomo expressions via post-decision dynamics.
     """
-    model = pyo.ConcreteModel()
-    
-    # We utilize a dynamic bounds function to strictly enforce the maximum 
-    # heater power (P_max) for each respective room based on its index.
-    def p_bounds(model, r):
-        return (0, params['P_max'][r-1])
-        
-    model.p = pyo.Var([1, 2], bounds=p_bounds)             
-    model.v = pyo.Var(domain=pyo.Binary)                   
-    
-    # Post-decision state variables representing the deterministic system state 
-    # immediately following our chosen action (transition from t to t^x).
-    model.T_x = pyo.Var([1, 2])
-    model.H_x = pyo.Var()      
-    
-    # Auxiliary variables for linearizing the threshold penalty basis functions.
-    # We impose an upper bound (50.0) as a robust safeguard to prevent the solver 
-    # from returning an 'Unbounded' status during unexpected state explorations.
-    model.penalty_T1 = pyo.Var(bounds=(0, 50.0))
-    model.penalty_T2 = pyo.Var(bounds=(0, 50.0))
+    p     = params
+    P_max = p['P_max']
+    T_ok  = p['T_ok']
+    T_low = p['T_low']
+    t     = int(state.get('current_time', 0))
+    T_out = float(p['T_out'][min(t, 9)])
+    T1    = float(state['T1'])
+    T2    = float(state['T2'])
+    H     = float(state.get('H', 0.0))
+    c     = int(state.get('c', 0))
+    occ1  = float(state.get('occ1', 0.0))
+    occ2  = float(state.get('occ2', 0.0))
+    price = float(state['price'])
 
-    # Safely extract the current timestep to fetch the deterministic outdoor temperature
-    t_step = int(state.get('current_time', 0))
-    current_T_out = params['T_out_list'][t_step % len(params['T_out_list'])]
+    m = pyo.ConcreteModel()
 
-    # --- Transition Dynamics Constraints ---
-    def temp_dynamics_rule(model, r):
-        other_r = 2 if r == 1 else 1
-        heat_exchange = params['zeta_exch'] * (state[f'T{other_r}'] - state[f'T{r}'])
-        thermal_loss = params['zeta_loss'] * (current_T_out - state[f'T{r}'])
-        heating_effect = params['zeta_conv'] * model.p[r]
-        vent_cooling = params['zeta_cool'] * model.v
-        occ_gain = params['zeta_occ'] * state[f'Occ{r}']
-        return model.T_x[r] == state[f'T{r}'] + heat_exchange + thermal_loss + heating_effect - vent_cooling + occ_gain
+    m.p1   = pyo.Var(bounds=(0, P_max))
+    m.p2   = pyo.Var(bounds=(0, P_max))
+    m.v    = pyo.Var(domain=pyo.Binary)
+    m.T1x  = pyo.Var()
+    m.T2x  = pyo.Var()
+    m.Hx   = pyo.Var()
+    m.pen1 = pyo.Var(bounds=(0, 20.0))
+    m.pen2 = pyo.Var(bounds=(0, 20.0))
 
-    model.temp_dyn_constraint = pyo.Constraint([1, 2], rule=temp_dynamics_rule)
+    # Post-decision dynamics
+    m.dyn_T1 = pyo.Constraint(expr=
+        m.T1x == T1 + p['zeta_exch']*(T2-T1) + p['zeta_loss']*(T_out-T1)
+                     + p['zeta_conv']*m.p1 - p['zeta_cool']*m.v + p['zeta_occ']*occ1)
+    m.dyn_T2 = pyo.Constraint(expr=
+        m.T2x == T2 + p['zeta_exch']*(T1-T2) + p['zeta_loss']*(T_out-T2)
+                     + p['zeta_conv']*m.p2 - p['zeta_cool']*m.v + p['zeta_occ']*occ2)
+    m.dyn_H  = pyo.Constraint(expr=
+        m.Hx  == H + p['eta_occ']*(occ1+occ2) - p['eta_vent']*m.v)
 
-    def humidity_dynamics_rule(model):
-        occ1 = state.get('Occ1', 0)
-        occ2 = state.get('Occ2', 0)
-        total_occ = occ1 + occ2
-        occ_contribution = params['eta_occ'] * total_occ
-        vent_reduction = params['eta_vent'] * model.v
-        return model.H_x == state['H'] + occ_contribution - vent_reduction
+    # Soft cold-penalty linearisation: pen_r >= T_low - T_rx  (pen_r >= 0 from bound)
+    m.pen1_c = pyo.Constraint(expr=m.pen1 >= T_low - m.T1x)
+    m.pen2_c = pyo.Constraint(expr=m.pen2 >= T_low - m.T2x)
 
-    model.hum_dyn_constraint = pyo.Constraint(rule=humidity_dynamics_rule)
-    
-    # --- Penalty Formulation Constraints ---
-    model.pen_t1_constr = pyo.Constraint(expr=model.penalty_T1 >= params['T_low'] - model.T_x[1])
-    model.pen_t2_constr = pyo.Constraint(expr=model.penalty_T2 >= params['T_low'] - model.T_x[2])
+    # Overrule constraints from current state
+    if c > 0:
+        m.vc = pyo.Constraint(expr=m.v == 1)
+    if H >= p['H_high']:
+        m.hc = pyo.Constraint(expr=m.v == 1)
+    if state.get('y_low_1'):
+        m.h1l = pyo.Constraint(expr=m.p1 == P_max)
+    if state.get('y_low_2'):
+        m.h2l = pyo.Constraint(expr=m.p2 == P_max)
+    if state.get('y_high_1'):
+        m.h1h = pyo.Constraint(expr=m.p1 == 0.0)
+    if state.get('y_high_2'):
+        m.h2h = pyo.Constraint(expr=m.p2 == 0.0)
 
-    # --- System Operational Constraints & Overrule Controllers ---
-    if state.get('vent_counter', 0) > 0:
-        model.vent_inertia_constraint = pyo.Constraint(expr=model.v == 1)
+    # c_next is linear in v given current c
+    # c=0 → 2v  |  c=1, v forced=1 → 0  |  c=2, v forced=1 → 1
+    if c == 0:
+        c_next = 2.0 * m.v
+    elif c == 1:
+        c_next = 0.0
+    else:
+        c_next = 1.0
 
-    if state['H'] > params['H_high']:
-        model.hum_overrule_constraint = pyo.Constraint(expr=model.v == 1)
+    vfa = (eta[0]*(m.T1x - T_ok)**2 +
+           eta[1]*(m.T2x - T_ok)**2 +
+           eta[2]*m.Hx +
+           eta[3]*c_next +
+           eta[4]*m.pen1 +
+           eta[5]*m.pen2 +
+           eta[6])
 
-    model.overrule_constraints = pyo.ConstraintList()
-    low_override_keys = {1: 'low_override_r1', 2: 'low_override_r2'}
-    for r in [1, 2]:
-        y_low = state.get(low_override_keys[r], 0)
-        if y_low == 1:
-            model.overrule_constraints.add(model.p[r] == params['P_max'][r-1])
+    m.obj = pyo.Objective(
+        expr=price*(m.p1 + m.p2 + p['P_vent']*m.v) + vfa,
+        sense=pyo.minimize)
 
-    # --- Objective Function (MIQP) ---
-    def objective_rule(model):
-        immediate_cost = state['price_t'] * (model.p[1] + model.p[2] + params['P_vent'] * model.v)
-        
-        T_ok = params['T_ok'] 
-        
-        # Basis functions: Penalizing quadratic deviations from the comfort setpoint,
-        # humidity accumulation, and strict low-temperature threshold violations.
-        vfa = (theta[0] * ((model.T_x[1] - T_ok) ** 2) + 
-               theta[1] * ((model.T_x[2] - T_ok) ** 2) + 
-               theta[2] * model.H_x + 
-               theta[3] * (model.penalty_T1 ** 2) + 
-               theta[4] * (model.penalty_T2 ** 2))
-               
-        return immediate_cost + vfa
-        
-    model.obj = pyo.Objective(rule=objective_rule, sense=pyo.minimize)
-    
-    # --- Solver Configuration ---
     solver = pyo.SolverFactory('gurobi')
-    solver.options['OutputFlag'] = 0 
-    solver.options['NonConvex'] = 2 
-    
-    result = solver.solve(model)
-    
+    solver.options['OutputFlag'] = 0
+    solver.options['NonConvex']  = 2   # required for quadratic VFA terms
+
+    result = solver.solve(m)
+
     if result.solver.termination_condition != pyo.TerminationCondition.optimal:
         return {'HeatPowerRoom1': 0.0, 'HeatPowerRoom2': 0.0, 'VentilationON': 0}
 
-    return {'HeatPowerRoom1': pyo.value(model.p[1]), 'HeatPowerRoom2': pyo.value(model.p[2]), 'VentilationON': pyo.value(model.v)}
-
-# ==============================================================================
-# 4. POLICY EXECUTION FUNCTION
-# ==============================================================================
-def select_action(state):
-    """
-    Primary execution function invoked by the evaluation environment.
-    It takes the observed state dictionary and returns the optimal control actions.
-    """
-    optimal_actions = solve_adp_step(state, TRAINED_THETA, params)
-
     return {
-        'HeatPowerRoom1': float(optimal_actions['HeatPowerRoom1']),
-        'HeatPowerRoom2': float(optimal_actions['HeatPowerRoom2']),
-        'VentilationON': int(optimal_actions['VentilationON'])
+        'HeatPowerRoom1': float(pyo.value(m.p1)),
+        'HeatPowerRoom2': float(pyo.value(m.p2)),
+        'VentilationON' : int(round(pyo.value(m.v))),
     }
+
+
+# ==============================================================================
+# 4. POLICY ENTRY POINT  (called by Task6_Environment.run_policy)
+# ==============================================================================
+def select_action(state: dict) -> dict:
+    t   = int(state.get('current_time', 0))
+    eta = ETA.get(t, ETA[max(ETA.keys())])
+    return solve_adp_step(state, eta, params)
